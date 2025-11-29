@@ -1,0 +1,5 @@
+{
+  "name": "DaiP智能聊天室",
+  "description": "一个沉浸式、极简风格的局域网多人聊天室，支持视频解析与AI智能助手互动。",
+  "requestFramePermissions": []
+}
