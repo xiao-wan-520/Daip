@@ -6,9 +6,12 @@ import { BROADCAST_CHANNEL_NAME } from './constants';
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentServer, setCurrentServer] = useState<ServerConfig | null>(null);
   const [existingNicknames, setExistingNicknames] = useState<string[]>([]);
 
   // Listen for other users to help uniqueness validation in Login
+  // Note: This only detects users in the default lobby or broadcasting globally.
+  // With node isolation, this might only catch users on the same channel if updated.
   useEffect(() => {
     const channel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
     
@@ -17,7 +20,7 @@ const App: React.FC = () => {
 
     channel.onmessage = (event) => {
       const data = event.data;
-      if (data.type === 'ANNOUNCE_PRESENCE' || data.type === 'USER_JOIN') {
+      if (data.type === 'HEARTBEAT' || data.type === 'USER_JOIN') {
         setExistingNicknames(prev => {
           if (prev.includes(data.user.nickname)) return prev;
           return [...prev, data.user.nickname];
@@ -39,24 +42,31 @@ const App: React.FC = () => {
       nickname,
       avatar: `https://picsum.photos/id/${avatarId}/200/200`,
       isOnline: true,
+      lastSeen: Date.now(),
     };
     
     // Simulate connection delay for effect
     setTimeout(() => {
+      setCurrentServer(server);
       setCurrentUser(newUser);
     }, 500);
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
+    setCurrentServer(null);
   };
 
   return (
     <>
-      {!currentUser ? (
+      {!currentUser || !currentServer ? (
         <Login onLogin={handleLogin} existingNicknames={existingNicknames} />
       ) : (
-        <ChatRoom currentUser={currentUser} onLogout={handleLogout} />
+        <ChatRoom 
+          currentUser={currentUser} 
+          serverConfig={currentServer} 
+          onLogout={handleLogout} 
+        />
       )}
     </>
   );

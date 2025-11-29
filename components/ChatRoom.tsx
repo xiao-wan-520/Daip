@@ -1,17 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, Message, MessageType } from '../types';
+import { User, Message, MessageType, ServerConfig } from '../types';
 import { AI_CONFIG, MOVIE_BOT_CONFIG, VIDEO_PARSER_URL, BROADCAST_CHANNEL_NAME } from '../constants';
 import { sendMessageToAi } from '../services/aiService';
 
 interface ChatRoomProps {
   currentUser: User;
+  serverConfig: ServerConfig;
   onLogout: () => void;
 }
 
 // Simple Emoji List
 const EMOJIS = ['😀', '😂', '🤣', '😍', '🥰', '😎', '🤓', '😭', '😡', '👍', '👎', '🎉', '🔥', '❤️', '🤔', '👀'];
 
-const ChatRoom: React.FC<ChatRoomProps> = ({ currentUser, onLogout }) => {
+const ChatRoom: React.FC<ChatRoomProps> = ({ currentUser, serverConfig, onLogout }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [onlineUsers, setOnlineUsers] = useState<User[]>([currentUser]);
@@ -23,46 +24,71 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ currentUser, onLogout }) => {
   const channelRef = useRef<BroadcastChannel | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Construct a unique channel name based on the Server ID to isolate nodes
+  const channelName = `${BROADCAST_CHANNEL_NAME}_${serverConfig.id}`;
+
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isAiThinking]);
 
-  // Simulated LAN Networking via BroadcastChannel
+  // Network & Heartbeat Logic
   useEffect(() => {
-    channelRef.current = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
+    console.log(`Joining Channel: ${channelName}`);
+    channelRef.current = new BroadcastChannel(channelName);
 
-    // Announce I am here
+    // Initial announcement
     channelRef.current.postMessage({ type: 'USER_JOIN', user: currentUser });
-
-    // Ask others to identify themselves (to build user list)
-    channelRef.current.postMessage({ type: 'REQUEST_USERS', requesterId: currentUser.id });
 
     channelRef.current.onmessage = (event) => {
       const data = event.data;
 
       if (data.type === 'NEW_MESSAGE') {
         setMessages((prev) => [...prev, data.message]);
-      } else if (data.type === 'USER_JOIN') {
+      } else if (data.type === 'USER_JOIN' || data.type === 'HEARTBEAT') {
+        // Update user list logic
         setOnlineUsers((prev) => {
-           if (prev.find(u => u.id === data.user.id)) return prev;
-           return [...prev, data.user];
-        });
-      } else if (data.type === 'REQUEST_USERS' && data.requesterId !== currentUser.id) {
-        // Someone asked who is online, tell them I am here
-        channelRef.current?.postMessage({ type: 'ANNOUNCE_PRESENCE', user: currentUser });
-      } else if (data.type === 'ANNOUNCE_PRESENCE') {
-         setOnlineUsers((prev) => {
-           if (prev.find(u => u.id === data.user.id)) return prev;
-           return [...prev, data.user];
+           const existingIndex = prev.findIndex(u => u.id === data.user.id);
+           if (existingIndex !== -1) {
+             // Update existing user timestamp
+             const newUsers = [...prev];
+             newUsers[existingIndex] = { ...data.user, lastSeen: Date.now() };
+             return newUsers;
+           }
+           // Add new user
+           return [...prev, { ...data.user, lastSeen: Date.now() }];
         });
       }
     };
 
+    // 1. FAST HEARTBEAT LOOP (Every 1 second)
+    const heartbeatInterval = setInterval(() => {
+      channelRef.current?.postMessage({ 
+        type: 'HEARTBEAT', 
+        user: { ...currentUser, lastSeen: Date.now() } 
+      });
+    }, 1000);
+
+    // 2. FAST CLEANUP LOOP (Every 2 seconds)
+    // Removes users who haven't sent a heartbeat in 3 seconds
+    const cleanupInterval = setInterval(() => {
+      const now = Date.now();
+      setOnlineUsers(prev => {
+        return prev.filter(u => {
+          // Always keep self
+          if (u.id === currentUser.id) return true;
+          // Keep if seen recently (within 3000ms)
+          return (now - (u.lastSeen || 0)) < 3000;
+        });
+      });
+    }, 2000);
+
     return () => {
+      clearInterval(heartbeatInterval);
+      clearInterval(cleanupInterval);
       channelRef.current?.close();
     };
-  }, [currentUser]);
+  }, [currentUser, channelName]);
 
   // Initial welcome message
   useEffect(() => {
@@ -71,12 +97,12 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ currentUser, onLogout }) => {
       senderId: 'system',
       senderName: '系统',
       avatar: '',
-      content: `欢迎 ${currentUser.nickname} 加入聊天室！`,
+      content: `欢迎 ${currentUser.nickname} 加入 [${serverConfig.name}]！`,
       type: MessageType.SYSTEM,
       timestamp: Date.now(),
     };
     setMessages([welcomeMsg]);
-  }, [currentUser.nickname]);
+  }, [currentUser.nickname, serverConfig.name]);
 
   const handleSendMessage = async () => {
     if (!inputText.trim()) return;
@@ -260,7 +286,9 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ currentUser, onLogout }) => {
                     </p>
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-                      <span className="text-xs text-slate-500">在线</span>
+                      <span className="text-xs text-slate-500">
+                         {user.id === currentUser.id ? '在线' : (user.lastSeen && Date.now() - user.lastSeen < 2000 ? '活跃' : '在线')}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -284,7 +312,10 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ currentUser, onLogout }) => {
             </button>
             <div>
               <h1 className="font-bold text-slate-100">DaiP 公共聊天室</h1>
-              <p className="text-xs text-slate-400">Server: 主服务器 (Main)</p>
+              <p className="text-xs text-slate-400 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></span>
+                {serverConfig.name} ({serverConfig.address})
+              </p>
             </div>
           </div>
           

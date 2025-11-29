@@ -9,6 +9,7 @@ export interface User {
   nickname: string;
   avatar: string;
   isOnline: boolean;
+  lastSeen?: number; // Timestamp for heartbeat detection
 }
 
 export interface Message {
